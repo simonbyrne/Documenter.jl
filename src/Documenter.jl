@@ -257,6 +257,13 @@ makedocs(
 hide(root::Pair, children) = (true, root.first, root.second, map(hide, children))
 hide(root::AbstractString, children) = (true, nothing, root, map(hide, children))
 
+
+# when we have determined to deploy there are 3 options
+# - LATEST: building on the `latest` branch, deploy to the `"latest"` folder
+# - TAG: building a tag, but not the latest release, deploy to the `tag` folder
+# - PR: building a PR, deploy to the `ENV["TRAVIS_BRANCH"]` folder
+@enum DeployMode LATEST TAG PR
+
 """
     deploydocs(
         root   = "<current-directory>",
@@ -319,6 +326,9 @@ of the `.travis.yml` configuration file.
 This defaults to `"nightly"`. This value must be one of those specified in the `julia:`
 section of the `.travis.yml` configuration file.
 
+**`deploy_pr`** can be set to true to deploy pr builds. The deploy folder is
+`branch/ENV["TRAVIS_BRANCH"]`
+
 **`deps`** is the function used to install any dependencies needed to build the
 documentation. By default this function installs `pygments` and `mkdocs` using the
 [`Deps.pip`](@ref) function:
@@ -347,6 +357,7 @@ function deploydocs(;
 
         osname = "linux",
         julia::AbstractString  = "nightly",
+        deploy_pr = false,
 
         deps   = Deps.pip("pygments", "mkdocs"),
         make   = () -> run(`mkdocs build`),
@@ -387,7 +398,7 @@ function deploydocs(;
             @debug("keyword repo = $repo must match ENV[\"TRAVIS_REPO_SLUG\"] = $travis_repo_slug for deployment.")
             should_deploy = false
         end
-        if travis_pull_request != "false"
+        if travis_pull_request != "false" && !deploy_pr
             @debug("ENV[\"TRAVIS_PULL_REQUEST\"] = $(travis_pull_request), should be \"false\" for deployment.")
             should_deploy = false
         end
@@ -418,6 +429,16 @@ function deploydocs(;
     end
 
     if should_deploy
+        # Determine "build mode"
+        if !isempty(travis_tag)
+            mode = TAG
+        elseif travis_branch == latest
+            mode = LATEST
+        elseif deploy_pr
+            mode = PR
+        else
+            error("this should never happen")
+        end
         # Add local bin path if needed.
         Deps.updatepath!()
         # Install dependencies when applicable.
@@ -437,7 +458,7 @@ function deploydocs(;
             Utilities.log("pushing new documentation to remote: $repo:$branch.")
             mktempdir() do temp
                 git_push(
-                    root, temp, repo;
+                    root, temp, repo, mode;
                     branch=branch, dirname=dirname, target=target,
                     tag=travis_tag, key=documenter_key, sha=sha
                 )
@@ -461,11 +482,24 @@ and when building docs for a tag they are deployed to a `vX.Y.Z` directory,
 and also to the `stable` directory.
 """
 function git_push(
-        root, temp, repo;
+        root, temp, repo, mode;
         branch="gh-pages", dirname="", target="site", tag="", key="", sha=""
     )
     dirname = isempty(dirname) ? temp : joinpath(temp, dirname)
     isdir(dirname) || mkpath(dirname)
+
+    # determine which directories we should deploy to
+    # - we are building on latest, deploy to `latest`
+    # - we are building a tag  deploy to tag folder
+    # - we are on a pr - deploy if deploy_pr is true
+    deploy_folders = String[]
+    if isempty(tag)
+        if true
+            push!(deploy_folders, "latest")
+        elseif
+    else
+    end
+
     # Versioned docs directories.
     latest_dir = joinpath(dirname, "latest")
     stable_dir = joinpath(dirname, "stable")
@@ -509,22 +543,28 @@ function git_push(
                     run(`git commit --allow-empty -m "Initial empty commit for docs"`)
                 end
 
-                # Copy docs to `latest`, or `stable`, `<release>`, and `<version>` directories.
-                if isempty(tag)
-                    gitrm_copy(target_dir, latest_dir)
-                    Writers.HTMLWriter.generate_siteinfo_file(latest_dir, "latest")
-                else
+                # Determine deploy folders
+                deploy_folders = String[]
+                if mode == TAG
+                    push!(deploy_folders, tag)
+                    # if this is the latest tag, deploy to stable too
                     @assert occursin(Base.VERSION_REGEX, tag) # checked in deploydocs
                     version = VersionNumber(tag)
-                    # only push to stable if this is the latest stable release
                     versions = filter!(x -> occursin(Base.VERSION_REGEX, x), readdir(dirname))
                     maxver = mapreduce(x -> VersionNumber(x), max, v"0.0.0", versions)
                     if version >= maxver && version.prerelease == () # don't deploy to stable for prereleases
-                        gitrm_copy(target_dir, stable_dir)
-                        Writers.HTMLWriter.generate_siteinfo_file(stable_dir, "stable")
+                        push!(deploy_folders, "stable")
                     end
-                    gitrm_copy(target_dir, tagged_dir)
-                    Writers.HTMLWriter.generate_siteinfo_file(tagged_dir, tag)
+                elseif mode == LATEST
+                    push!(deploy_folders, "latest")
+                else # mode == PR
+                    push!(deploy_folders, get(ENV, "TRAVIS_PULL_REQUEST_BRANCH", "pr-build"))
+                end
+
+                # Copy docs to deploy_folders
+                for deploy_folder in deploy_folders
+                    gitrm_copy(target_dir, joinpath(dirname, deploy_folder))
+                    Writers.HTMLWriter.generate_siteinfo_file(joinpath(dirname, deploy_folder), deploy_folder)
                 end
 
                 # Create the versions.js file containing a list of all docs
