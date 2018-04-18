@@ -18,7 +18,7 @@ module Documenter
 
 using Compat, DocStringExtensions
 import Compat.Base64: base64decode, base64encode
-import Compat: @info
+import Compat: @info, @debug
 import Compat.Pkg
 
 @static if VERSION < v"0.7.0-DEV.3439"
@@ -346,7 +346,7 @@ function deploydocs(;
         latest = "master",
 
         osname = "linux",
-        julia  = "nightly",
+        julia::AbstractString  = "nightly",
 
         deps   = Deps.pip("pygments", "mkdocs"),
         make   = () -> run(`mkdocs build`),
@@ -376,31 +376,38 @@ function deploydocs(;
         end
     end
 
-    # Sanity checks
-    if !isa(julia, AbstractString)
-        error("julia must be a string, got $julia ($(typeof(julia)))")
-    end
-    if !isempty(travis_repo_slug) && !occursin(travis_repo_slug, repo)
-        Compat.@warn("repo $repo does not match $travis_repo_slug")
-    end
+    # activate debugging
+    dbg = get(ENV, "DOCUMENTER_DEBUG", "") == "true"
+    dbgvars = dbg ? ("JULIA_DEBUG" => "Documenter", ) : ()
 
-    # When should a deploy be attempted?
-    should_deploy =
-        occursin(travis_repo_slug, repo) &&
-        travis_pull_request == "false"   &&
-        travis_osname == osname &&
-        travis_julia  == julia  &&
-        (
-            travis_branch == latest ||
-            travis_tag    != ""
-        )
-
-    # check that the tag is valid
-    if should_deploy && !isempty(travis_tag) && !occursin(Base.VERSION_REGEX, travis_tag)
-        Compat.@warn("tag `$(travis_tag)` is not a valid VersionNumber")
-        should_deploy = false
-    end
-
+    # Determine if we should attempt a deploy
+    should_deploy = true
+    withenv(dbgvars...) do
+        if !occursin(travis_repo_slug, repo)
+            @debug("keyword repo = $repo must match ENV[\"TRAVIS_REPO_SLUG\"] = $travis_repo_slug for deployment.")
+            should_deploy = false
+        end
+        if travis_pull_request != "false"
+            @debug("ENV[\"TRAVIS_PULL_REQUEST\"] = $(travis_pull_request), should be \"false\" for deployment.")
+            should_deploy = false
+        end
+        if travis_osname != osname
+            @debug("keyword osname = $osname must match ENV[\"TRAVIS_OS_NAME\"] = $travis_osname for deployment.")
+            should_deploy = false
+        end
+        if travis_julia != julia
+            @debug("keyword julia = $julia must match ENV[\"TRAVIS_JULIA_VERSION\"] = $travis_julia for deployment.")
+            should_deploy = false
+        end
+        if travis_branch != latest && isempty(travis_tag)
+            @debug("keyword latest = $latest must match ENV[\"TRAVIS_BRANCH\"] = $travis_branch for deployment.")
+            should_deploy = false
+        end
+        if !isempty(travis_tag) && !occursin(Base.VERSION_REGEX, travis_tag)
+            @debug("ENV[\"TRAVIS_TAG\"] = $travis_tag is not a valid VersionNumber.")
+            should_deploy = false
+        end
+    end # do
     # check DOCUMENTER_KEY only if the branch, Julia version etc. check out
     if should_deploy && isempty(documenter_key)
         Compat.@warn("""
@@ -408,23 +415,6 @@ function deploydocs(;
               Note that in Documenter v0.9.0 old deprecated authentication methods were removed.
               DOCUMENTER_KEY is now the only option. See the documentation for more information.""")
         should_deploy = false
-    end
-
-    if get(ENV, "DOCUMENTER_DEBUG", "") == "true"
-        Utilities.debug("TRAVIS_REPO_SLUG       = \"$travis_repo_slug\"")
-        Utilities.debug("  should match \"$repo\" (kwarg: repo)")
-        Utilities.debug("TRAVIS_PULL_REQUEST    = \"$travis_pull_request\"")
-        Utilities.debug("  deploying if equal to \"false\"")
-        Utilities.debug("TRAVIS_OS_NAME         = \"$travis_osname\"")
-        Utilities.debug("  deploying if equal to \"$osname\" (kwarg: osname)")
-        Utilities.debug("TRAVIS_JULIA_VERSION   = \"$travis_julia\"")
-        Utilities.debug("  deploying if equal to \"$julia\" (kwarg: julia)")
-        Utilities.debug("TRAVIS_BRANCH          = \"$travis_branch\"")
-        Utilities.debug("TRAVIS_TAG             = \"$travis_tag\"")
-        Utilities.debug("  deploying if branch equal to \"$latest\" (kwarg: latest) or tag is set")
-        Utilities.debug("git commit SHA         = $sha")
-        Utilities.debug("DOCUMENTER_KEY exists  = $(!isempty(documenter_key))")
-        Utilities.debug("should_deploy          = $should_deploy")
     end
 
     if should_deploy
@@ -454,9 +444,8 @@ function deploydocs(;
             end
         end
     else
-        Utilities.log("""
-            skipping docs deployment.
-              You can set DOCUMENTER_DEBUG to "true" in Travis to see more information.""")
+        Utilities.log("skipping docs deployment." * dbg ? "" :
+                      "You can set DOCUMENTER_DEBUG to \"true\" in Travis to see more information.")
     end
 end
 
