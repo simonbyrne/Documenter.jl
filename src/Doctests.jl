@@ -8,6 +8,7 @@ import ..Documenter:
     Documenter,
     Documents,
     Utilities,
+    Utilities.Markdown2,
     Walkers
 
 using Compat, DocStringExtensions
@@ -31,6 +32,12 @@ function find_codeblock_in_file(code, file)
         return ""
     end
 end
+
+mutable struct MutableMD2CodeBlock
+    language :: String
+    code :: String
+end
+MutableMD2CodeBlock(block :: Markdown2.CodeBlock) = MutableMD2CodeBlock(block.language, block.code)
 
 """
 $(SIGNATURES)
@@ -62,7 +69,11 @@ function __ans__!(m::Module, value)
 end
 
 function doctest(block::Markdown.Code, meta::Dict, doc::Documents.Document, page)
-    lang = block.language
+    doctest(Markdown2._convert_block(block), meta, doc, page)
+end
+
+function doctest(block_immutable::Markdown2.CodeBlock, meta::Dict, doc::Documents.Document, page)
+    lang = block_immutable.language
     if startswith(lang, "jldoctest")
         # Define new module or reuse an old one from this page if we have a named doctest.
         name = match(r"jldoctest[ ]?(.*)$", split(lang, ';', limit = 2)[1])[1]
@@ -75,6 +86,7 @@ function doctest(block::Markdown.Code, meta::Dict, doc::Documents.Document, page
         end
 
         # Normalise line endings.
+        block = MutableMD2CodeBlock(block_immutable)
         block.code = replace(block.code, "\r\n" => "\n")
 
         # parse keyword arguments to doctest
@@ -109,10 +121,10 @@ function doctest(block::Markdown.Code, meta::Dict, doc::Documents.Document, page
         end
         if occursin(r"^julia> "m, block.code)
             eval_repl(block, sandbox, meta, doc, page)
-            block.language = "julia-repl"
+            #block.language = "julia-repl"
         elseif occursin(r"^# output$"m, block.code)
             eval_script(block, sandbox, meta, doc, page)
-            block.language = "julia"
+            #block.language = "julia"
         else
             push!(doc.internal.errors, :doctest)
             file = meta[:CurrentFile]
@@ -128,7 +140,7 @@ function doctest(block::Markdown.Code, meta::Dict, doc::Documents.Document, page
                 """
             )
         end
-       delete!(meta, :LocalDocTestArguments)
+        delete!(meta, :LocalDocTestArguments)
     end
     false
 end
@@ -142,7 +154,7 @@ end
 # Doctest evaluation.
 
 mutable struct Result
-    block  :: Markdown.Code # The entire code block that is being tested.
+    block  :: MutableMD2CodeBlock # The entire code block that is being tested.
     input  :: String # Part of `block.code` representing the current input.
     output :: String # Part of `block.code` representing the current expected output.
     file   :: String # File in which the doctest is written. Either `.md` or `.jl`.
